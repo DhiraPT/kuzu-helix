@@ -480,13 +480,6 @@ class KuzuToHelixMigrator:
                 count = len(df)
                 click.echo(f"  ✓ Exported {count} {'nodes' if is_node else 'edges'} from {table_name} to {output_file.name}")
 
-                if is_node:
-                    self.stats["nodes_migrated"][table_name] = count
-                    self.stats["total_nodes"] += count
-                else:
-                    self.stats["edges_migrated"][table_name] = count
-                    self.stats["total_edges"] += count
-
         except Exception as e:
             error_msg = f"Failed to export table {table_name}: {e}"
             click.echo(f"  ✗ {error_msg}")
@@ -528,6 +521,7 @@ class KuzuToHelixMigrator:
 
             node_type = parquet_file.stem.replace('_nodes', '')
             query_name = f'Create{node_type}'
+            imported_count = 0
 
             # Batch import
             batch_size = 100
@@ -561,10 +555,14 @@ class KuzuToHelixMigrator:
                         helix_id = self._extract_helix_id(response[0])
                         if helix_id:
                             self.node_id_mapping[(node_type, kuzu_id)] = helix_id
+                            imported_count += 1
                             if self.verbose:
                                 click.echo(f"      Stored mapping: ({node_type}, {kuzu_id}) -> {helix_id}")
                         else:
                             raise Exception(f"Could not extract HelixDB ID from response: {response[0]}")
+
+            self.stats["nodes_migrated"][node_type] = imported_count
+            self.stats["total_nodes"] += imported_count
 
         except Exception as e:
             error_msg = f"Failed to import {parquet_file.name}: {e}"
@@ -584,6 +582,7 @@ class KuzuToHelixMigrator:
             query_name = f'Create{edge_type}'
 
             skipped_count = 0
+            imported_count = 0
             batch_size = 100
             for i in range(0, len(df), batch_size):
                 batch = df.iloc[i:i+batch_size]
@@ -597,7 +596,7 @@ class KuzuToHelixMigrator:
                     helix_target_id = self.node_id_mapping.get((target_type, kuzu_target_id))
 
                     if not helix_source_id or not helix_target_id:
-                        if self.verbose:
+                        if self.verbose and skipped_count < 2:
                             click.echo(f"      Missing mapping:")
                             click.echo(f"        Looking for: ({source_type}, {repr(kuzu_source_id)}) -> {helix_source_id}")
                             click.echo(f"        Looking for: ({target_type}, {repr(kuzu_target_id)}) -> {helix_target_id}")
@@ -611,8 +610,6 @@ class KuzuToHelixMigrator:
 
                     data = self._deserialize_row(data)
 
-                    # Build parameters for edge query based on generated queries.hx
-                    # Edge queries expect source/target IDs with specific parameter names
                     if source_type == target_type:
                         source_param = f"{source_type.lower()}_from_id"
                         target_param = f"{target_type.lower()}_to_id"
@@ -628,6 +625,10 @@ class KuzuToHelixMigrator:
 
                     # Execute string-based query (uses queries.hx)
                     self.helix_client.query(query_name, query_params)
+                    imported_count += 1
+
+            self.stats["edges_migrated"][edge_type] = imported_count
+            self.stats["total_edges"] += imported_count
 
             if skipped_count > 0:
                 click.echo(f"  ⚠️  Skipped {skipped_count} edges due to missing node ID mappings")
@@ -673,22 +674,22 @@ class KuzuToHelixMigrator:
         """Generate migration report."""
         click.echo("\n📊 Migration Report")
         click.echo("=" * 60)
-        
+
         elapsed = datetime.now() - self.stats["start_time"]
-        
+
         click.echo(f"Total nodes migrated: {self.stats['total_nodes']:,}")
         for node_type, count in self.stats["nodes_migrated"].items():
             click.echo(f"  - {node_type}: {count:,}")
-        
+
         click.echo(f"\nTotal edges migrated: {self.stats['total_edges']:,}")
         for edge_type, count in self.stats["edges_migrated"].items():
             click.echo(f"  - {edge_type}: {count:,}")
-        
+
         if self.stats["errors"]:
             click.echo(f"\n⚠️  Errors encountered: {len(self.stats['errors'])}")
             for error in self.stats["errors"][:5]:
                 click.echo(f"  - {error}")
-        
+
         click.echo(f"\nElapsed time: {elapsed}")
         click.echo(f"Output directory: {self.output_dir}")
         
