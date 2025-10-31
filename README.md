@@ -26,51 +26,15 @@ pip install helix-py
 pip install kuzu pandas pyarrow click tqdm
 ```
 
-## Step 2: Set Up HelixDB Instance
+## Step 2: Initialize HelixDB
 
-HelixDB can run locally or in the cloud. For first-time setup, we'll use a local instance:
+Initialize a new HelixDB project in your working directory:
 
-### Option A: Local Instance (Recommended for Testing)
-
-```python
-# save this as setup_helix.py
-from helix.instance import Instance
-import time
-
-def setup_helix():
-    print("🚀 Setting up local HelixDB instance...")
-    
-    # Create instance (stores config in 'helixdb-cfg' directory)
-    helix_instance = Instance("helixdb-cfg", 6969, verbose=True)
-    
-    # Deploy and start
-    helix_instance.deploy()
-    helix_instance.start()
-    
-    print("✅ HelixDB running on localhost:6969")
-    print("   Press Ctrl+C to stop")
-    
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\\n🛑 Stopping HelixDB...")
-        helix_instance.stop()
-
-if __name__ == "__main__":
-    setup_helix()
-```
-
-Run it:
 ```bash
-python setup_helix.py
+helix init
 ```
 
-Keep this terminal open - HelixDB needs to stay running during migration.
-
-### Option B: Cloud Instance
-
-If you have a HelixDB cloud instance, note your endpoint URL and credentials for Step 4.
+**Important**: This creates a `helix.toml` configuration file in the current directory. The migration tool must run from a directory containing this file (or use `--output` to specify a path with `helix.toml`), as `helix push dev` requires it.
 
 ## Step 3: Download the Migration Tool
 
@@ -84,26 +48,36 @@ curl -O https://raw.githubusercontent.com/your-repo/kuzu-helix/main/kuzu_to_heli
 ### Basic Migration (Local HelixDB):
 
 ```bash
+# Run from the directory where you ran 'helix init'
 python kuzu_to_helix_migrator.py --kuzu-path /path/to/your/kuzu.db
 ```
+
+The migration tool will:
+1. Connect to your Kuzu database and discover the schema
+2. Generate `schema.hx` and `queries.hx` files in the output directory (default: `./db`)
+3. **Pause and prompt you** to deploy the schema
+4. Export data to Parquet format
+5. Import all nodes and edges to HelixDB
+
+**Note**: By default, generated files go to `./db`. If you want them in the current directory (where `helix.toml` is), use `--output .`
 
 ### Advanced Options:
 
 ```bash
-python kuzu_to_helix_migrator.py \\
-  --kuzu-path /path/to/your/kuzu.db \\
-  --output ./migration_output \\
-  --helix-port 6969 \\
+python kuzu_to_helix_migrator.py \
+  --kuzu-path /path/to/your/kuzu.db \
+  --output ./migration_output \
+  --helix-port 6969 \
   --verbose
 ```
 
 ### Cloud HelixDB:
 
 ```bash
-python kuzu_to_helix_migrator.py \\
-  --kuzu-path /path/to/your/kuzu.db \\
-  --cloud \\
-  --helix-endpoint https://your-instance.helix.cloud \\
+python kuzu_to_helix_migrator.py \
+  --kuzu-path /path/to/your/kuzu.db \
+  --cloud \
+  --helix-endpoint https://your-instance.helix.cloud \
   --helix-port 6969
 ```
 
@@ -113,26 +87,48 @@ python kuzu_to_helix_migrator.py \\
 - `--helix-port, -p`: HelixDB port (default: 6969)
 - `--helix-endpoint, -e`: API endpoint for cloud instances
 - `--local/--cloud`: Use local or cloud HelixDB (default: local)
-- `--output, -o`: Directory for migration files (default: auto-generated)
+- `--output, -o`: Directory for migration files (default: ./db)
 - `--verbose, -v`: Show detailed progress
+- `--skip-deploy`: Skip the deployment prompt
 
-## Step 5: Verify the Migration
+## Step 5: Deploy Schema to HelixDB
+
+When the migration script pauses, open a new terminal and deploy your schema:
+
+```bash
+# For development/testing
+helix push dev
+
+# For production
+helix push prod
+```
+
+After deployment completes, return to the migration terminal and press **Enter** to continue.
+
+## Step 6: Verify the Migration
 
 After migration completes, you'll see:
 
 ```
 ✅ Migration completed successfully!
-  Total nodes migrated: 1,234
-  Total edges migrated: 5,678
-  Output directory: ./migration_output_TIMESTAMP
+Total nodes migrated: 1,234
+  - User: 850
+  - City: 234
+
+Total edges migrated: 5,678
+  - Follows: 3,456
+  - LivesIn: 2,222
+
+Elapsed time: 0:02:15
+Output directory: ./db
 ```
 
 Check the migration report:
 ```bash
-cat migration_output_*/migration_report.json
+cat db/migration_report.json
 ```
 
-## Step 6: Query Your Data in HelixDB
+## Step 7: Query Your Data in HelixDB
 
 Now you can query your migrated data using HelixDB's Python client:
 
@@ -140,27 +136,13 @@ Now you can query your migrated data using HelixDB's Python client:
 import helix
 
 # Connect to HelixDB
-db = helix.Client(local=True, port=6969)
+client = helix.Client(local=True, port=6969)
 
-# Define a custom query class
-from helix import Query
-from helix.types import Payload
-
-class find_nodes(Query):
-    def __init__(self, node_type: str, limit: int = 10):
-        super().__init__()
-        self.node_type = node_type
-        self.limit = limit
-    
-    def query(self) -> Payload:
-        return [{
-            "operation": "find_nodes",
-            "type": self.node_type,
-            "limit": self.limit
-        }]
-
-# Query your data
-result = db.query(find_nodes("Person", 5))
+# Use the auto-generated queries from queries.hx
+result = client.query("CreateUser", {
+    "name": "Alice",
+    "age": 30
+})
 print(result)
 ```
 
@@ -169,45 +151,37 @@ print(result)
 1. **Schema Discovery**: Automatically detects all node and relationship types in your Kuzu database
 2. **Type Mapping**: Maps Kuzu data types to compatible HelixDB types
 3. **Data Export**: Efficiently exports data using Parquet format
-4. **Schema Creation**: Creates corresponding node and edge types in HelixDB
-5. **Data Import**: Imports all nodes and relationships using HelixDB's Query interface
+4. **Schema Creation**: Generates `schema.hx` and `queries.hx` files for HelixDB
+5. **Data Import**: Imports all nodes and relationships using HelixDB's query interface
 6. **Verification**: Generates detailed migration report with statistics
 
 ## Data Type Mapping
 
 | Kuzu Type | HelixDB Type | Notes |
 |-----------|--------------|-------|
-| INT64/INT32 | I64/I32 | Integer types |
-| UINT64/UINT32 | U64/U32 | Unsigned integers |
-| FLOAT/DOUBLE | F32/F64 | Floating point |
-| STRING | String | UTF-8 strings |
-| BOOL | Bool | Boolean values |
-| DATE/TIMESTAMP | String | Converted to ISO format |
-| LIST/STRUCT/MAP | String | JSON serialized |
-
-## Adding Vector Capabilities
-
-After migration, you can enhance your graph with vector embeddings:
-
-```python
-from helix.embedding.openai_client import OpenAIEmbedder
-
-# Add embeddings to your nodes
-embedder = OpenAIEmbedder()  # Requires OPENAI_API_KEY
-
-# Example: Add embeddings to person names
-persons = db.query(find_nodes("Person", 100))
-for person in persons:
-    # Create embedding from person's name or bio
-    embedding = embedder.embed(person['name'])
-    # Store embedding back to HelixDB
-    # ... (implementation depends on your schema)
-```
+| INT128, INT64, INT32, INT16, INT8 | I64, I64, I32, I16, I8 | Signed integers (INT128 → I64) |
+| SERIAL | I64 | Auto-increment integer |
+| UINT64, UINT32, UINT16, UINT8 | U64, U32, U16, U8 | Unsigned integers |
+| FLOAT, DOUBLE | F32, F64 | Floating point |
+| STRING, BLOB | String | UTF-8 strings / Binary data |
+| BOOL | Boolean | Boolean values |
+| DATE | Date | **Converted to RFC 3339 with timezone** (e.g., "2024-01-01T00:00:00Z") |
+| TIMESTAMP, TIMESTAMP_TZ, TIMESTAMP_NS, TIMESTAMP_MS, TIMESTAMP_SEC | Date | **All converted to RFC 3339 with timezone** (e.g., "2024-01-01T12:00:00Z") |
+| INTERVAL | String | Time interval as string |
+| UUID, INTERNAL_ID | ID | Identifier types |
+| LIST, ARRAY | [Type] | Arrays (e.g., [String], [I64]) |
+| STRUCT, MAP, UNION | String | Complex types JSON serialized |
+| NODE, REL, RECURSIVE_REL | String | Graph types as string |
+| ANY, NULL | String | Generic/null types as string |
 
 ## Troubleshooting
 
+### "Query CreateXXX failed - check if schema is deployed"
+- Ensure you've run `helix push dev` to deploy your schema
+- The migration script pauses to prompt you, but if you used `--skip-deploy`, you must deploy manually
+
 ### "HelixDB connection failed"
-- Ensure HelixDB instance is running (`python setup_helix.py`)
+- Ensure HelixDB is initialized with `helix init`
 - Check port 6969 is not blocked by firewall
 - For cloud instances, verify endpoint and credentials
 
@@ -263,20 +237,26 @@ for person in persons:
 # 1. Install dependencies
 pip install helix-py kuzu pandas pyarrow click tqdm
 
-# 2. Start HelixDB (in one terminal)
-python setup_helix.py
+# 2. Initialize HelixDB
+helix init
 
-# 3. Run migration (in another terminal)
+# 3. Run migration
 python kuzu_to_helix_migrator.py --kuzu-path ./my_kuzu_database.db --verbose
 
-# 4. Verify results
-cat migration_output_*/migration_report.json
+# 4. When prompted, deploy schema (in another terminal)
+helix push dev
 
-# 5. Query your data
+# 5. Press Enter to continue migration
+
+# 6. Verify results
+cat db/migration_report.json
+
+# 7. Query your data
 python -c "
 import helix
-db = helix.Client(local=True, port=6969)
-# Your queries here...
+client = helix.Client(local=True, port=6969)
+result = client.query('CreateUser', {'name': 'Alice', 'age': 30})
+print(result)
 "
 ```
 
